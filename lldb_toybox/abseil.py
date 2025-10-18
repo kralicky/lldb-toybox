@@ -12,6 +12,7 @@ import re
 
 class AbseilHashContainer(IterableContainer):
 	def __init__(self, valobj):
+		# logger = lldb.formatters.Logger.Logger()
 		self.valobj = canonize_synthetic_valobj(valobj)
 
 		# Many flat_hash_... types are implemented with inheritance from raw_hash_set, and
@@ -73,29 +74,33 @@ class AbseilHashContainer(IterableContainer):
 			return f"Size {size} exceeds capacity {capacity}"
 
 	def get_size(self):
-		return self.common.GetChildMemberWithName('size_').GetValueAsUnsigned() >> 1
+		return self.common.GetChildMemberWithName('size_').GetChildMemberWithName('data_').GetValueAsUnsigned() >> 17
 
 	def iterator(self):
 		capacity = self.get_capacity()
+		heap = self.common.GetChildMemberWithName('heap_or_soo_').GetChildMemberWithName('heap')
+		ctrl_arr = make_array_from_pointer(heap.GetChildMemberWithName("control"), capacity)
+		slot_arr = make_array_from_pointer(heap.GetChildMemberWithName('slot_array').GetChildMemberWithName('p'), capacity, self.slot_ptr_t)
 
-		ctrl_arr = make_array_from_pointer(self.common.GetChildMemberWithName('control_'), capacity)
-		slot_arr = make_array_from_pointer(self.common.GetChildMemberWithName('slots_'), capacity, self.slot_ptr_t)
+		if self.get_size() == 1:
+			soo_slot = self.common.GetChildMemberWithName('heap_or_soo_').GetChildMemberWithName('soo_data').AddressOf().Cast(self.slot_ptr_t).Dereference()
+			yield self.slot_value(soo_slot)
+		else:
+			for index in range(0, capacity):
+				ctrl = ctrl_arr.GetChildAtIndex(index).GetValueAsUnsigned()
+				if ctrl & 0x80:
+					continue
+				slot = slot_arr.GetChildAtIndex(index)
+				yield self.slot_value(slot)
 
-		for index in range(0, capacity):
-			ctrl = ctrl_arr.GetChildAtIndex(index).GetValueAsUnsigned()
-
-			if ctrl & 0x80:
-				continue
-
-			slot = slot_arr.GetChildAtIndex(index)
-
-			if self.is_flat:
-				if self.is_map:
-					yield slot.GetChildMemberWithName('value')
-				else:
-					yield slot
+	def slot_value(self, slot):
+		if self.is_flat:
+			if self.is_map:
+				return slot.GetChildMemberWithName('value')
 			else:
-				yield slot.Dereference()
+				return slot
+		else:
+			return slot.Dereference()
 
 class AbseilHashContainerIteratorValue(Value):
 	def __init__(self, valobj):
